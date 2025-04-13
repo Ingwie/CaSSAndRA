@@ -3,7 +3,7 @@ logger = logging.getLogger(__name__)
 
 import pandas as pd
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 import os
 from PIL import Image
@@ -16,8 +16,10 @@ from . cfgdata import rovercfg, appcfg, commcfg
 #mower class
 @dataclass
 class Mower:
+    fw: str = None
+    fw_version: str = None
     uptoday: bool = False
-    battery_voltage: float = 0
+    battery_voltage: float = 0.0
     position_x: float = 0.0
     position_y: float = 0.0
     position_delta: float = 0.0
@@ -34,25 +36,27 @@ class Mower:
     position_visible_satellites_dgps: int = 0
     map_crc: int = 0
     lateral_error: float = 0.0
-    soc: float = 0.0
+    soc: int = 0
     speed: float = 0.0
+    average_speed: float = rovercfg.mowspeed_setpoint/2
     mowspeed_setpoint: float = rovercfg.mowspeed_setpoint
     gotospeed_setpoint: float = rovercfg.gotospeed_setpoint
     direction: float = 0.0
     backwards: bool = False
     timestamp: datetime = datetime.now()
     #commanded
+    last_mow_cmd: bool = False
     last_mow_status: bool = False
     cmd_move_lin: float = 0.0
     cmd_move_ang: float = 0.0
     last_cmd: pd.DataFrame = field(default_factory=lambda: pd.DataFrame([{'msg': 'AT+C,-1,-1,-1,-1,-1,-1,-1,-1'}]))
     last_task_name: str = 'no task'
     current_task: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())
-    map_upload_started: bool = False
-    map_upload_failed: bool = False
     map_old_crc: int = None
-    map_upload_cnt: int = 0
     mowprogress: float = 0.0
+    last_position_mow_point_index: int = None
+    measured_time_since_last_position_index_change = None
+    seconds_per_idx: float = None
     #frontend
     rover_image: Image = field(default_factory = lambda: 
                                Image.open(os.path.dirname(__file__).replace('/backend/data', '/assets/icons/'+appcfg.rover_picture+'rover0grad.png')))
@@ -62,9 +66,13 @@ class Mower:
     status_tmp_timestamp: datetime = datetime.now()
     sensor_status: str = 'unknown'
     position_age_hr = '99+d'
-    dock_reason_operator: bool = False
     dock_reason: str = None
     dock_reason_time: datetime = datetime.now()
+
+    def set_props(self, props: pd.DataFrame) -> None:
+        props = props.iloc[-1]
+        self.fw = props['firmware']
+        self.fw_version = props['version']
 
     def set_state(self, state: pd.DataFrame) -> None:
         state = state.iloc[-1]
@@ -95,6 +103,7 @@ class Mower:
         self.set_robot_status(self.calc_status())
         self.sensor_status = self.calc_sensor_status()
         self.position_age_hr = self.calc_position_age_hr()
+        self.calc_seconds_per_idx()
         self.uptoday = True
     
     def calc_speed(self, position_x: float, position_y: float, timestamp) -> float:
@@ -105,8 +114,9 @@ class Mower:
             timedelta = datetime.now() - timestamp
             timedelta_seconds = timedelta.total_seconds()
             speed = round(delta_distance/timedelta_seconds, 2)
+            self.average_speed = 0.999*self.average_speed + 0.001*speed
         else:
-            speed = 0
+            speed = 0.0
         return speed
     
     def calc_direction(self) -> float:
@@ -238,7 +248,7 @@ class Mower:
             
     def check_dock_reason(self) -> None:
         if self.job == 4: 
-            if self.dock_reason_operator:
+            if self.dock_reason != None:
                 pass
             elif self.sensor == 18:
                 self.dock_reason = 'temperature'
@@ -250,17 +260,61 @@ class Mower:
                 self.dock_reason = 'low battery'
             self.dock_reason_time = datetime.now()
         elif (self.job == 2 and (datetime.now() - self.dock_reason_time).seconds >= 3600) or (self.job != 4 and self.job != 2):
-            self.dock_reason_operator = False
             self.dock_reason = None
             self.dock_reason_time = datetime.now()
     
     def set_robot_status(self, status: str, status_tmp = None) -> None:
+        # set mow status to false if docking triggered (avoid wrong state if docking triggered from sunray fw)
+        if self.status != 'docking' and status == 'docking':
+            self.last_mow_status = False
+        # set status and tmp status
         self.status = status
         if status_tmp != None:
             self.status_tmp = status_tmp
-        # if commcfg.api == 'MQTT':
-        #     cassandra_api.create_api_payload()
-        #     cassandra_api.publish('robot', cassandra_api.robotstate_json)
+    
+    def calc_seconds_per_idx(self) -> None:
+        # # based on history data, make problems on slow machines
+        # start_point = datetime.now() - timedelta(days=1)
+        # try:
+        #     relevant_data = state
+        #     relevant_data['timestamp'] = pd.to_datetime(relevant_data['timestamp'])
+        #     relevant_data = state[(state['timestamp'] >= start_point) & (state['job'] == 1) & (state['position_solution'] == 2)]
+        #     relevant_data.loc[:,'position_mow_point_index'] = relevant_data['position_mow_point_index'].diff()
+        #     relevant_data = relevant_data[relevant_data['position_mow_point_index'] > 0]
+        #     relevant_data.loc[:,'timestamp'] = relevant_data['timestamp'].diff()
+        #     relevant_data.loc[:,'timestamp'] = relevant_data['timestamp'].dt.total_seconds()
+        #     relevant_data.loc[:,'timestamp'] = relevant_data['timestamp']/relevant_data['position_mow_point_index']
+        #     relevant_data = relevant_data[relevant_data['timestamp'] < 300]
+        #     if len(relevant_data) < 50:
+        #         return
+        #     test = relevant_data['timestamp'].mean()
+
+        # except Exception as e:
+        #     logger.warning('Could not create estimation time, data in state data frame are invalid')
+        #     logger.debug(f'{e}')
+
+        # based on current data
+        current_seconds_per_idx = None
+        if (self.status == 'mow' and self.last_position_mow_point_index == None and self.measured_time_since_last_position_index_change == None):
+            self.last_position_mow_point_index = self.position_mow_point_index
+            self.measured_time_since_last_position_index_change = datetime.now()
+        elif (self.status == 'mow'):
+            idx_delta =  self.position_mow_point_index - self.last_position_mow_point_index
+            time_delta = (datetime.now() - self.measured_time_since_last_position_index_change).seconds
+            if (idx_delta > 0):
+                current_seconds_per_idx = time_delta/idx_delta
+        else:
+            self.last_position_mow_point_index = None
+            self.measured_time_since_last_position_index_change = None
+
+        if (current_seconds_per_idx != None and current_seconds_per_idx < 300):
+            if (self.seconds_per_idx == None):
+                self.seconds_per_idx = current_seconds_per_idx
+            else:
+                self.seconds_per_idx = 0.999 * self.seconds_per_idx+0.001 * current_seconds_per_idx
+        if (current_seconds_per_idx != None):
+            self.last_position_mow_point_index = self.position_mow_point_index
+            self.measured_time_since_last_position_index_change = datetime.now()
 
 #define robot instance
 robot = Mower()

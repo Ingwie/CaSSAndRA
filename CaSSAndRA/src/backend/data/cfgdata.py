@@ -9,7 +9,8 @@ import base64
 import pandas as pd
 from PIL import Image
 
-file_paths = None
+# local imports
+from src.pathdata import paths
 
 #commcfg class
 @dataclass
@@ -40,7 +41,7 @@ class CommCfg:
     
     def read_commcfg(self) -> dict:
         try:
-            with open(file_paths.user.comm) as f: 
+            with open(paths.file_paths.user.comm) as f: 
                 commcfg_from_file = json.load(f)
                 f.close()
                 logger.debug('Backend: commcfg to read: '+ str(commcfg_from_file))
@@ -72,7 +73,7 @@ class CommCfg:
             logger.error('Could not read commcfg.json. Missing commcfg.json. Go with standard values')
             logger.debug(str(e))
             res = self.save_commcfg()
-            with open (file_paths.user.comm) as f: 
+            with open (paths.file_paths.user.comm) as f: 
                 commcfg_from_file = json.load(f)
                 f.close()
                 return commcfg_from_file
@@ -107,7 +108,7 @@ class CommCfg:
                                     {'CHAT_ID': self.telegram_chat_id}]
             new_data['PUSHOVER'] = [{'TOKEN': self.pushover_token},
                                     {'USER': self.pushover_user}]
-            with open(file_paths.user.comm, 'w') as f:
+            with open(paths.file_paths.user.comm, 'w') as f:
                 logger.debug('New commcfg data: '+str(new_data))
                 json.dump(new_data, f, indent=4)
             logger.info('commcfg data are successfully stored in commcfg.json')
@@ -134,7 +135,7 @@ class AppCfg:
 
     def read_appcfg(self) -> None:
         try:
-            with open(file_paths.user.appcfg) as f: 
+            with open(paths.file_paths.user.appcfg) as f: 
                 appcfg_from_file = json.load(f)
                 f.close()
         except Exception as e:
@@ -171,7 +172,7 @@ class AppCfg:
             new_data['obstacles_amount'] = self.obstacles_amount
             new_data['light_mode'] = self.light_mode
             new_data['rover_picture_size'] = self.rover_picture_size
-            with open(file_paths.user.appcfg, 'w') as f:
+            with open(paths.file_paths.user.appcfg, 'w') as f:
                 logger.debug('New appcfg data: '+str(new_data))
                 json.dump(new_data, f, indent=4)
             logger.info('appcfg data are successfully stored in appcfg.json')
@@ -191,14 +192,14 @@ class RoverCfg:
     mowspeed_setpoint: float = 0.3
     gotospeed_setpoint: float = 0.5
     positionmode: str = 'relative'
-    lon: float = 0
-    lat: float = 0
+    lon: float = 0.0
+    lat: float = 0.0
     fix_timeout: int = 60
     finish_and_restart: bool = False
 
     def read_rovercfg(self) -> None:
         try:
-            with open(file_paths.user.rovercfg) as f: 
+            with open(paths.file_paths.user.rovercfg) as f: 
                 rovercfg_from_file = json.load(f)
                 f.close()
         except Exception as e:
@@ -229,7 +230,7 @@ class RoverCfg:
             new_data['lat'] = self.lat
             new_data['fix_timeout'] = self.fix_timeout
             new_data['finish_and_restart'] = self.finish_and_restart
-            with open(file_paths.user.rovercfg, 'w') as f:
+            with open(paths.file_paths.user.rovercfg, 'w') as f:
                 logger.debug('New rovercfg data: '+str(new_data))
                 json.dump(new_data, f, indent=4)
             logger.info('rovercfg data are successfully stored in rovercfg.json')
@@ -253,7 +254,7 @@ class PathPlannerCfg:
 
     def read_pathplannercfg(self) -> None:
         try:
-            with open(file_paths.user.pathplannercfg) as f: 
+            with open(paths.file_paths.user.pathplannercfg) as f: 
                 pathplannercfg_from_file = json.load(f)
                 f.close()
         except Exception as e:
@@ -286,7 +287,7 @@ class PathPlannerCfg:
             new_data['mowborder'] = self.mowborder
             new_data['mowexclusion'] = self.mowexclusion
             new_data['mowborderccw'] = self.mowborderccw
-            with open(file_paths.user.pathplannercfg, 'w') as f:
+            with open(paths.file_paths.user.pathplannercfg, 'w') as f:
                 logger.debug('New pathplannercfg data: '+str(new_data))
                 json.dump(new_data, f, indent=4)
             logger.info('pathplannercfg data are successfully stored in pathplannercfg.json')
@@ -305,6 +306,21 @@ class PathPlannerCfg:
         self.mowborder = parameters.iloc[0]['mowborder']
         self.mowexclusion = parameters.iloc[0]['mowexclusion']
         self.mowborderccw = parameters.iloc[0]['mowborderccw']
+    
+    def read_pathplannercfg_from_api(self, parameters: dict) -> None:
+        try:
+            logger.debug('pahtplannercfg to read: '+ str(parameters))
+            self.pattern = parameters['mowPattern']
+            self.width = parameters['width']
+            self.angle = parameters['angle']
+            self.distancetoborder = parameters['distanceToBorder']
+            self.mowarea = parameters['mowArea']
+            self.mowborder = parameters['borderLaps']
+            self.mowexclusion = parameters['mowExclusionBorder']
+            self.mowborderccw = parameters['mowBorderCcw']
+        except Exception as e:
+            logger.error('Could not read pathplannercfg from API. Data are invalid')
+            logger.error(str(e))
 
 @dataclass
 class ScheduleCfg:
@@ -344,7 +360,7 @@ class ScheduleCfg:
 
     def read_schedulecfg(self) -> None:
         try:
-            with open(file_paths.user.schedulecfg) as f: 
+            with open(paths.file_paths.user.schedulecfg) as f: 
                 schedulecfg_from_file = json.load(f)
                 f.close()
         except Exception as e:
@@ -393,16 +409,64 @@ class ScheduleCfg:
                                  {'saturday': self.saturday_tasks},
                                  {'sunday': self.sunday_tasks}
                                 ]
-            with open(file_paths.user.schedulecfg, 'w') as f:
+            with open(paths.file_paths.user.schedulecfg, 'w') as f:
                 logger.debug('New schedulecfg data: '+str(new_data))
                 json.dump(new_data, f, indent=4)
             logger.info('Schedulecfg data are successfully stored in schedulecfg.json')
             return 0
         except Exception as e:
             logger.error('Could not save schedulecfg.json. Unexpected behaivor')
-            logger.debug(str(e))
+            logger.error(str(e))
             return -1
-
+    
+    def save_schedulecfg_api(self, schedule_data: dict) -> int:
+        try:
+            self.active = schedule_data['scheduleActive']
+            self.monday_time = schedule_data['timeRange'][0]['monday']
+            self.tuesday_time = schedule_data['timeRange'][1]['tuesday']
+            self.wednesday_time = schedule_data['timeRange'][2]['wednesday']
+            self.thursday_time = schedule_data['timeRange'][3]['thursday']
+            self.friday_time = schedule_data['timeRange'][4]['friday']
+            self.saturday_time= schedule_data['timeRange'][5]['saturday']
+            self.sunday_time = schedule_data['timeRange'][6]['sunday']
+            self.monday_tasks = schedule_data['tasks'][0]['monday']
+            self.tuesday_tasks = schedule_data['tasks'][1]['tuesday']
+            self.wednesday_tasks = schedule_data['tasks'][2]['wednesday']
+            self.thursday_tasks = schedule_data['tasks'][3]['thursday']
+            self.friday_tasks = schedule_data['tasks'][4]['friday']
+            self.saturday_tasks = schedule_data['tasks'][5]['saturday']
+            self.sunday_tasks = schedule_data['tasks'][6]['sunday']
+            return self.save_schedulecfg()
+        except Exception as e:
+            logger.error('Could not save schedulecfg.json. Unexpected behaivor')
+            logger.error(str(e))
+            return -1
+    
+    def to_json(self) -> dict:
+        try:
+            schedule_json = dict()
+            schedule_json['scheduleActive'] = self.active
+            schedule_json['timeRange'] = [{'monday': self.monday_time},
+                                      {'tuesday': self.tuesday_time},
+                                      {'wednesday': self.wednesday_time},
+                                      {'thursday': self.thursday_time},
+                                      {'friday': self.friday_time},
+                                      {'saturday': self.saturday_time},
+                                      {'sunday': self.sunday_time}
+                                    ]
+            schedule_json['tasks'] = [{'monday': self.monday_tasks},
+                                 {'tuesday': self.tuesday_tasks},
+                                 {'wednesday': self.wednesday_tasks},
+                                 {'thursday': self.thursday_tasks},
+                                 {'friday': self.friday_tasks},
+                                 {'saturday': self.saturday_tasks},
+                                 {'sunday': self.sunday_tasks}
+                                ]
+            return schedule_json
+        except Exception as e:
+            logger.error('Could not convert schedule data to json')
+            logger.error(str(e))
+            return dict()
 
 commcfg = CommCfg()
 rovercfg = RoverCfg()

@@ -37,21 +37,22 @@ class Perimeter:
     preview: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())
     previewId: str = None
     obstacles: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())
+    obstaclesId: str = None
     obstacle_img: Image = field(default_factory = lambda: 
                                 Image.open(os.path.dirname(__file__).replace('/backend/data', '/assets/icons/obstacle.png')))
     astar_graph: nx.Graph = nx.Graph()
-    areatomow: float = 0
-    distancetogo: float = 0
+    areatomow: int = 0
+    distancetogo: int = 0
     map_crc: int = None
     current_perimeter_file: str = ''
     plotgotopoints: bool = False
     # Mow progress
-    finished_distance = 0
-    distance = 0
-    distance_perc = 0
-    finished_idx = 0
-    idx = 0
-    idx_perc = 0 
+    finished_distance: int = 0
+    distance: int = 0
+    distance_perc: int = 0
+    finished_idx: int = 0
+    idx: int = 0
+    idx_perc: int = 0 
     # Progress bar
     calculating: bool = False
     calculated_progress: int = 0
@@ -60,6 +61,7 @@ class Perimeter:
     total_tasks: int = 0
 
     def set_gotopoint(self, clickdata: dict) -> None:
+        self.clear_route_mowpath()
         goto = {'X':[clickdata['points'][0]['x']], 'Y':[clickdata['points'][0]['y']], 'type': ['way']}
         self.gotopoint = pd.DataFrame(goto)
 
@@ -217,6 +219,12 @@ class Perimeter:
             logger.info('No search wire found.')
         self.astar_graph = G
     
+    def create_map_crc(self) -> None:
+        dataForCrc = current_map.perimeter[current_map.perimeter['type'] != 'search wire']
+        mapCRCx = dataForCrc['X']*100 
+        mapCRCy = dataForCrc['Y']*100
+        self.map_crc = int(mapCRCx.sum() + mapCRCy.sum())
+    
     def check_direct_way(self, start, end) -> bool:
         way = LineString([start, end])
         direct_way_possible = way.within(self.perimeter_polygon)
@@ -227,6 +235,7 @@ class Perimeter:
         self.preview = pd.DataFrame()
         self.mowpath = pd.DataFrame()
         self.obstacles = pd.DataFrame()
+        self.create_map_crc()
         self.create_perimeter_polygon()
         self.create_perimeter_for_plot()
         self.create_points_from_polygon()
@@ -236,6 +245,7 @@ class Perimeter:
         self.map_id = str(uuid.uuid4())
         self.previewId = str(uuid.uuid4())
         self.mowpathId = str(uuid.uuid4())
+        self.obstaclesId = str(uuid.uuid4())
     
     def calc_route_preview(self, route: list) -> None:
         self.preview = pd.DataFrame(route)
@@ -247,6 +257,20 @@ class Perimeter:
         self.mowpath = self.preview
         self.mowpath['type'] = 'way'
         self.mowpathId = str(uuid.uuid4())
+    
+    def reset_route_mowpath(self) -> None:
+        self.mowpath = robot.current_task
+        self.mowpathId = str(uuid.uuid4())
+    
+    def clear_route_mowpath(self) -> None:
+        self.mowpath = pd.DataFrame()
+        self.preview = pd.DataFrame()
+        self.mowpathId = str(uuid.uuid4())
+        self.previewId = str(uuid.uuid4())
+    
+    def add_obstacles(self, data: pd.DataFrame) -> None:
+        self.obstacles = data
+        self.obstaclesId = str(uuid.uuid4())
     
     def read_map_name(self) -> str:
         try:
@@ -307,8 +331,8 @@ class Perimeter:
                 self.distance_perc = round((self.finished_distance/self.distance)*100)
                 self.idx_perc = round((self.finished_idx/self.idx)*100)
             except Exception as e:
-                logger.warning('Backend: Calculation of mow progress failed')
-                logger.debug(str(e))
+                logger.error('Backend: Calculation of mow progress failed')
+                logger.error(str(e))
                 self.finished_distance = 0
                 self.distance = 0
                 self.distance_perc = 0
@@ -380,6 +404,27 @@ class Perimeter:
             return geojson
         except Exception as e:
             logger.error('Could not export mow path to geojson')
+            logger.debug(f'{e}')
+            return dict()
+    
+    def obstacles_to_gejson(self) -> dict:
+        try:
+            obstacles_for_export = self.obstacles
+            geojson = dict(type="FeatureCollection", features=[])
+            geojson['features'].append(dict(type='Feature', properties=dict(name='obstacles', id=self.obstaclesId)))
+            if not obstacles_for_export.empty:
+                for i, obstacle in enumerate(obstacles_for_export['CRC'].unique()):
+                    coords = obstacles_for_export[obstacles_for_export['CRC'] == obstacle]
+                    coords = coords[coords['type'] == 'points']
+                    value = dict(type="Feature", properties=dict(name="obstacle"), geometry=dict(dict(type="Polygon", coordinates=[coords[['X', 'Y']].values.tolist()])))
+                    geojson['features'].append(value)
+                return geojson
+            else:
+                value = dict(type="Feature", properties=dict(name="obstacle"), geometry=dict(dict(type="Polygon", coordinates=[])))
+                geojson['features'].append(value)
+                return geojson
+        except Exception as e:
+            logger.error('Could not export obstacles to gejson')
             logger.debug(f'{e}')
             return dict()
 
@@ -527,6 +572,44 @@ class Perimeters:
                 self.imported = pd.DataFrame()
                 return
     
+    def import_api_map(self, content: dict) -> list:
+        logger.info(f'Received new map data over api')
+        try:
+            perimeter = pd.DataFrame()
+            map_name =  content['features'][0]['properties']['name']
+            exclusion_nr = 0
+            for feature in content['features']:
+                if feature['properties']['name'] == 'perimeter':
+                    df = pd.DataFrame(feature['geometry']['coordinates'])
+                    df.columns = ['X', 'Y']
+                    df['type'] = 'perimeter'
+                    #df = df.head(-1)
+                    perimeter = pd.concat([perimeter, df], ignore_index=True)
+                if feature['properties']['name'] == 'exclusion':
+                    df = pd.DataFrame(feature['geometry']['coordinates'])
+                    df.columns = ['X', 'Y']
+                    df['type'] = f'exclusion_{exclusion_nr}'
+                    #df = df.head(-1)
+                    perimeter = pd.concat([perimeter, df], ignore_index=True)
+                    exclusion_nr += 1
+                if feature['properties']['name'] == 'dockPath':
+                    df = pd.DataFrame(feature['geometry']['coordinates'])
+                    df.columns = ['X', 'Y']
+                    df['type'] = 'dockpoints'
+                    perimeter = pd.concat([perimeter, df], ignore_index=True)
+                if feature['properties']['name'] == 'searchWire':
+                    df = pd.DataFrame(feature['geometry']['coordinates'])
+                    df.columns = ['X', 'Y']
+                    df['type'] = 'search wire'
+                    perimeter = pd.concat([perimeter, df], ignore_index=True)
+            res = [0, perimeter, map_name]
+            return res
+        except Exception as e:
+            logger.error('Received map data is invalid. Aborting')
+            logger.error(str(e))
+            return [-1, pd.DataFrame(), None]
+
+    
     def create_perimeter_for_plot(self, data_to_plot: pd.DataFrame) -> pd.DataFrame:
         perimeter_df = pd.DataFrame()
         #Add first value to the end, if perimeter or exclusion
@@ -544,6 +627,39 @@ class Perimeters:
                 coords = pd.concat([coords, first_value_cpy], ignore_index=True)
                 perimeter_df = pd.concat([perimeter_df, coords], ignore_index=True)
         return perimeter_df
+    
+    def maps_to_geojson(self) -> dict:
+        try:
+            logger.info('Exporting map to geojson')
+            perimeter_for_export = self.build_cpy
+            geojson = dict(type="FeatureCollection", features=[])
+            if not perimeter_for_export.empty:
+                #perimeter
+                coords = perimeter_for_export[perimeter_for_export['type'] == 'perimeter']
+                value = dict(type="Feature", properties=dict(name="perimeter"), geometry=dict(dict(type="Polygon", coordinates=[coords[['X', 'Y']].values.tolist()])))
+                geojson['features'].append(value)
+                #dockpoints
+                coords = perimeter_for_export[perimeter_for_export['type'] == 'dockpoints']
+                value = dict(type="Feature", properties=dict(name="dockpoints"), geometry=dict(dict(type="LineString", coordinates=coords[['X', 'Y']].values.tolist())))
+                geojson['features'].append(value)
+                #search wire
+                coords = perimeter_for_export[perimeter_for_export['type'] == 'search wire']
+                value = dict(type="Feature", properties=dict(name="search wire"), geometry=dict(dict(type="LineString", coordinates=coords[['X', 'Y']].values.tolist())))
+                geojson['features'].append(value)
+                #exclusions
+                filtered = perimeter_for_export[(perimeter_for_export['type'] != 'perimeter') & (perimeter_for_export['type'] != 'dockpoints') & (perimeter_for_export['type'] != 'search wire')]
+                for i, exclusion in enumerate(filtered['type'].unique()):
+                    coords = perimeter_for_export[perimeter_for_export['type'] == exclusion]
+                    value = dict(type="Feature", properties=dict(name="exclusion"), idx=i, geometry=dict(dict(type="Polygon", coordinates=[coords[['X', 'Y']].values.tolist()])))
+                    geojson['features'].append(value)
+            else:
+               value = dict(type="Feature", properties=dict(name="perimeter"), geometry=dict(dict(type="Polygon", coordinates=[]))) 
+               geojson['features'].append(value)
+            return geojson
+        except Exception as e:
+            logger.error('Could not export map coords to gejson')
+            logger.error(f'{e}')
+            return dict()
     
     def export_geojson(self) -> str:
         try:
@@ -887,11 +1003,10 @@ class Task:
             task_nr = len(self.subtasks['task nr'].unique())
             filtered_df = self.subtasks[(self.subtasks['type'] == 'preview route') & (self.subtasks['task nr'] == task_nr-1)]
             start_position = {'X': [filtered_df.iloc[-1]['X']], 'Y': [filtered_df.iloc[-1]['Y']], 'type': ['start position']}
-            position_df = pd.DataFrame(start_position)
         else:
             task_nr = 0
             start_position = {'X': [robot.position_x], 'Y': [robot.position_y], 'type': ['start position']}
-            position_df = pd.DataFrame(start_position)
+        position_df = pd.DataFrame(start_position)
         subtask = self.preview
         selection = pd.DataFrame(self.selection)
         selection.columns = ['X', 'Y']
@@ -905,11 +1020,54 @@ class Task:
         self.subtasks_parameters = pd.concat([self.subtasks_parameters, pd.DataFrame(parameters)], ignore_index= True)
         self.preview = pd.DataFrame()
     
+    def create_subtask_api(self, subtask_data: dict) -> list:
+        received_task = pd.DataFrame()
+        received_task_parameters = pd.DataFrame()
+        for feature in subtask_data['features']:
+            if 'taskName' in feature['properties']:
+                task_name = feature['properties']['taskName']
+            else:
+                task_nr = feature['properties']['subtaskNr']
+                if not received_task.empty:
+                    filtered_df = received_task[(received_task['type'] == 'preview route') & (received_task['task nr'] == task_nr-1)]
+                    start_position = {'X': [filtered_df.iloc[-1]['X']], 'Y': [filtered_df.iloc[-1]['Y']], 'type': ['start position']}
+                else:
+                    start_position = {'X': [robot.position_x], 'Y': [robot.position_y], 'type': ['start position']}
+                position_df = pd.DataFrame(start_position)
+                subtask = pd.DataFrame(feature['geometry'][1]['coordinates'][0], columns=['X', 'Y'])
+                subtask['type'] = 'preview route'
+                selection = pd.DataFrame(feature['geometry'][0]['coordinates'][0], columns=['X', 'Y'])
+                selection['type'] = 'lassoPoints'
+                selection = selection.iloc[:-1]
+                subtask = pd.concat([subtask, selection], ignore_index=True)
+                subtask = pd.concat([subtask, position_df], ignore_index=True)
+                subtask['map name'] = self.map_name
+                subtask['task nr'] = task_nr
+                received_task = pd.concat([received_task, subtask], ignore_index=True) 
+                parameters = self.pathplannercfg_rename_api_keys(feature['properties'])
+                received_task_parameters = pd.concat([received_task_parameters, pd.DataFrame(parameters)], ignore_index=True)
+        return [received_task, received_task_parameters, task_name]
+
     def pathplanenrcfg_to_dict(self, task_nr: int) -> dict:
         parameters = {'map name': self.map_name, 'task nr': task_nr, 'pattern': [self.parameters.pattern], 'width': [self.parameters.width], 'angle': [self.parameters.angle], 
                       'distancetoborder': [self.parameters.distancetoborder], 'mowarea': [self.parameters.mowarea], 'mowborder': [self.parameters.mowborder], 
                       'mowexclusion': [self.parameters.mowexclusion], 'mowborderccw': [self.parameters.mowborderccw]}
         return parameters
+    
+    def pathplannercfg_rename_api_keys(self, parameters: dict) -> dict:
+        key_mapping = {'mowPattern': 'pattern', 
+                       'width': 'width', 
+                       'angle': 'angle', 
+                       'distanceToBorder': 'distancetoborder', 
+                       'borderLaps': 'mowborder',
+                       'mowArea': 'mowarea',
+                       'mowExclusionBorder': 'mowexclusion',
+                       'mowBorderCcw': 'mowborderccw'}
+        parameters_new_keys = {key_mapping.get(k, k): v for k, v in parameters['mowParameters'].items()}
+        parameters_new_keys = {k: [v] for k, v in parameters_new_keys.items()}
+        parameters_new_keys['map name'] = self.map_name
+        parameters_new_keys['task nr'] = parameters['subtaskNr']
+        return parameters_new_keys
     
     def load_task_order(self, tasks_order: list) -> None:
         if tasks_order is not None and tasks_order != []:
@@ -951,6 +1109,80 @@ class Tasks:
     selected: str = ''
     saved: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())
     saved_parameters: pd.DataFrame = field(default_factory=lambda: pd.DataFrame())
+
+    def task_to_gejson(self, task_name: str) -> dict:
+        try:
+            preview_for_export = self.saved[(self.saved['name'] == task_name) & (self.saved['map name'] == current_map.name) & (self.saved['type'] == 'preview route')]
+            selection_for_export = self.saved[(self.saved['name'] == task_name) & (self.saved['map name'] == current_map.name) & ((self.saved['type'] == 'lassoPoints') | (self.saved['type'] == 'range'))]
+            geojson = dict(type="FeatureCollection", features=[])
+            geojson['features'].append(dict(type='Feature', properties=dict(name='task', id=task_name, mapName=current_map.name)))
+            if not preview_for_export.empty:
+                for subtask in preview_for_export['task nr'].unique():
+                    preview_coords = self.preview_to_geojson(preview_for_export[preview_for_export['task nr'] == subtask], int(subtask))
+                    selection_coords = self.selection_to_geojson(selection_for_export[selection_for_export['task nr'] == subtask], int(subtask))
+                    task_parameters = self.parameteres_to_gejson(self.saved_parameters[(self.saved_parameters['task nr'] == subtask) & (self.saved_parameters['name'] == task_name)], int(subtask))
+                    selection_coords['properties'].update(task_parameters)
+                    geojson['features'].append(preview_coords)
+                    geojson['features'].append(selection_coords)
+            else:
+                preview_coords = dict(type="Feature", properties=dict(name=task_name), geometry=dict(dict(type="LineString", coordinates=[])))
+                selection_coords = dict(type="Feature", properties=dict(name=task_name), geometry=dict(dict(type="Polygon", coordinates=[])))
+                geojson['features'].append(preview_coords)
+                geojson['features'].append(selection_coords)
+            return geojson
+        except Exception as e:
+            logger.error('Could not export task to geojson')
+            logger.debug(f'{e}')
+            return dict()
+    
+    def preview_to_geojson(self, preview: pd.DataFrame, name: int) -> dict:
+        try:
+            preview_coords = dict(type="Feature", properties=dict(name=name), geometry=dict(dict(type="LineString", coordinates=[preview[['X', 'Y']].values.tolist()])))
+            return preview_coords
+        except Exception as e:
+            logger.error('Could not create preview for task')
+            logger.error(f'{e}')
+            return dict()
+
+    def selection_to_geojson(self, selection: pd.DataFrame, name: int) -> dict:
+        try:
+            if not selection.empty:
+                if selection.iloc[0]['type'] == 'range':
+                    calced_selection = self.range_to_lasso_points(selection)
+                    calced_selection = pd.concat([calced_selection, calced_selection.iloc[[0]]], ignore_index=True)
+                    selection_coords = dict(type="Feature", properties=dict(name=name, type='range'), geometry=dict(dict(type="Polygon", coordinates=[calced_selection[['X', 'Y']].values.tolist()])))
+                else:
+                    selection = pd.concat([selection, selection.iloc[[0]]], ignore_index=True)
+                    selection_coords = dict(type="Feature", properties=dict(name=name, type='lasso'), geometry=dict(dict(type="Polygon", coordinates=[selection[['X', 'Y']].values.tolist()])))
+            else:
+                selection_coords = dict(type="Feature", properties=dict(name=name, type='map'), geometry=dict(dict(type="Polygon", coordinates=[current_map.perimeter[current_map.perimeter['type'] == 'perimeter'][['X', 'Y']].values.tolist()])))
+            return selection_coords
+        except Exception as e:
+            logger.error('Could not create selection for task')
+            logger.error(f'{e}')
+            return dict()
+    
+    def parameteres_to_gejson(self, parameters: pd.DataFrame, name: int) -> dict:
+        try:
+            return dict(mowPattern=str(parameters.iloc[0]['pattern']), width=float(parameters.iloc[0]['width']), 
+                        angle=int(parameters.iloc[0]['angle']), distanceToBorder=int(parameters.iloc[0]['distancetoborder']), 
+                        mowArea=bool(parameters.iloc[0]['mowarea']), borderLaps=int(parameters.iloc[0]['mowborder']), 
+                        mowExclusionBorder=bool(parameters.iloc[0]['mowexclusion']), mowBorderCcw=bool(parameters.iloc[0]['mowborderccw']))
+        except Exception as e:
+            logger.error('Could not create parameters for task')
+            logger.error(f'{e}')
+            return dict()
+
+    def range_to_lasso_points(self, range: pd.DataFrame) -> pd.DataFrame:
+        try:
+            tmp_dict = {'X': [range.iloc[0]['X'], range.iloc[1]['X'], range.iloc[1]['X'], range.iloc[0]['X']], 'Y': [range.iloc[0]['Y'], range.iloc[0]['Y'], range.iloc[1]['Y'], range.iloc[1]['Y']]}
+            lasso_points = pd.DataFrame(tmp_dict)
+            lasso_points['type'] = 'lassoPoints'
+            return lasso_points
+        except Exception as e:
+            logger.error('Could not create lasso points')
+            logger.error(f'{e}')
+            return pd.DataFrame()
 
 current_map = Perimeter()
 mapping_maps = Perimeters()
